@@ -69,6 +69,58 @@ def get_local_rank():
     global _LOCAL_RANK
     return _LOCAL_RANK
 
+# Make this use custom collective communication extension
+def init_hybrid_distributed_environment(
+    world_size: int = -1,
+    rank: int = -1,
+    distributed_init_method: str = "env://",
+    local_rank: int = -1,
+    backend: str = "nccl",
+    is_cpu: bool = False,
+):
+    if is_cpu:
+        # TODO: support hybrid GPU-CPU collective comminications
+        return
+    logger.info(
+        "world_size=%d rank=%d local_rank=%d "
+        "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
+        distributed_init_method, backend)
+    if not torch.distributed.is_initialized():
+        assert distributed_init_method is not None, (
+            "distributed_init_method must be provided when initializing "
+            "distributed environment")
+        # this backend is used for WORLD
+        torch.distributed.init_process_group(
+            backend=backend,
+            init_method=distributed_init_method,
+            world_size=world_size,
+            rank=rank)
+        global _DEVICE_WORLD_GROUP, _CPU_WORLD_GROUP
+        _DEVICE_WORLD_GROUP = torch.distributed.group.WORLD
+        ranks = list(range(torch.distributed.get_world_size()))
+        _CPU_WORLD_GROUP = torch.distributed.new_group(ranks=ranks,
+                                                       backend="gloo")
+        # set the local rank
+        # local_rank is not available in torch ProcessGroup,
+        # see https://github.com/pytorch/pytorch/issues/122816
+        if local_rank == -1:
+            # local rank not set, this usually happens in single-node
+            # setting, where we can use rank as local rank
+            if distributed_init_method == "env://":
+                local_rank = envs.LOCAL_RANK
+            else:
+                local_rank = rank
+        global _LOCAL_RANK
+        _LOCAL_RANK = local_rank
+        # A small all_reduce for warmup.
+        data = torch.zeros(1)
+        if torch.cuda.is_available():
+            data = data.to(device=f"cuda:{local_rank}")
+        torch.distributed.all_reduce(data)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        del data
+
 
 def init_distributed_environment(
     world_size: int = -1,

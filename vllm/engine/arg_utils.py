@@ -91,6 +91,8 @@ class EngineArgs:
     ngram_prompt_lookup_max: Optional[int] = None
     ngram_prompt_lookup_min: Optional[int] = None
 
+    hybrid_cpu_gpu: bool = False
+
     def __post_init__(self):
         if self.tokenizer is None:
             self.tokenizer = self.model
@@ -579,7 +581,8 @@ class EngineArgs:
                 self.tokenizer_pool_extra_config,
             ),
             self.ray_workers_use_nsight,
-            distributed_executor_backend=self.distributed_executor_backend)
+            distributed_executor_backend=self.distributed_executor_backend,
+            hybird_cpu_gpu=self.hybrid_cpu_gpu)
 
         speculative_config = SpeculativeConfig.maybe_create_spec_config(
             target_model_config=model_config,

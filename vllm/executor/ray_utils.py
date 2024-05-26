@@ -41,6 +41,37 @@ try:
             output = self.worker.execute_model()
             output = pickle.dumps(output)
             return output
+        
+    class HybridRayWorkerWrapper(WorkerWrapperBase):
+        """Hybrid Ray wrapper for vllm.worker.Worker, allowing Worker to be
+        lazliy initialized after Ray sets CUDA_VISIBLE_DEVICES."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            # Since the compiled DAG runs a main execution
+            # in a different thread that calls cuda.set_device.
+            # The flag indicates is set_device is called on
+            # that thread.
+            self.compiled_dag_cuda_device_set = False
+
+        def get_node_ip(self) -> str:
+            return get_ip()
+
+        def get_node_and_gpu_ids(self) -> Tuple[str, List[int]]:
+            node_id = ray.get_runtime_context().get_node_id()
+            gpu_ids = ray.get_gpu_ids()
+            return node_id, gpu_ids
+
+        def execute_model_compiled_dag_remote(self, ignored):
+            """Used only when compiled DAG is enabled."""
+            import torch
+            if not self.compiled_dag_cuda_device_set:
+                torch.cuda.set_device(self.worker.device)
+                self.compiled_dag_cuda_device_set = True
+
+            output = self.worker.execute_model()
+            output = pickle.dumps(output)
+            return output
 
 except ImportError as e:
     logger.warning(
@@ -102,12 +133,20 @@ def initialize_ray_cluster(
                 "available GPUs in the placement group.")
     else:
         num_gpus_in_cluster = ray.cluster_resources().get("GPU", 0)
+        num_cpu_cores_in_cluster = ray.cluster_resources().get("CPU", 0)
+        print(ray.cluster_resources())
         if parallel_config.world_size > num_gpus_in_cluster:
             raise ValueError(
                 "The number of required GPUs exceeds the total number of "
                 "available GPUs in the cluster.")
+        num_cpu_cores_per_cpu_worker: int = num_cpu_cores_in_cluster // parallel_config.num_cpu_workers
+        if num_cpu_cores_in_cluster % parallel_config.num_cpu_workers != 0:
+            raise ValueError("The number of cpu workers must be divisible by"
+                             "total number of cpu cores")
         # Create a new placement group
-        placement_group_specs = ([{"GPU": 1}] * parallel_config.world_size)
+        placement_group_specs = ([{"GPU": 1}] * parallel_config.world_size 
+                                 + [{"CPU": num_cpu_cores_per_cpu_worker}] * parallel_config.num_cpu_workers)
+        print(placement_group_specs)
         current_placement_group = ray.util.placement_group(
             placement_group_specs)
         # Wait until PG is ready - this will block until all

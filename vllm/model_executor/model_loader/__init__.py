@@ -18,6 +18,7 @@ def get_model(*, model_config: ModelConfig, load_config: LoadConfig,
               vision_language_config: Optional[VisionLanguageConfig],
               cache_config: CacheConfig) -> nn.Module:
     loader = get_model_loader(load_config)
+    print(f"loader type: {type(loader)}")
     return loader.load_model(model_config=model_config,
                              device_config=device_config,
                              lora_config=lora_config,

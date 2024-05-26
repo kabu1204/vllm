@@ -266,9 +266,10 @@ class DummyModelLoader(BaseModelLoader):
                 model = _initialize_model(model_config, self.load_config,
                                           lora_config, vision_language_config,
                                           cache_config)
+                print(type(model))
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.
-            initialize_dummy_weights(model)
+            # initialize_dummy_weights(model)
         return model.eval()
 
 

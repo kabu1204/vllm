@@ -531,6 +531,7 @@ class ParallelConfig:
         ray_workers_use_nsight: bool = False,
         placement_group: Optional["PlacementGroup"] = None,
         distributed_executor_backend: Optional[str] = None,
+        hybird_cpu_gpu: bool = False,
     ) -> None:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
@@ -555,16 +556,23 @@ class ParallelConfig:
             ray_found = ray_utils.ray is not None
             self.distributed_executor_backend = "ray" if ray_found else "mp"
 
+        if hybird_cpu_gpu:
+            # TODO: support multiple cpu workers
+            self.distributed_executor_backend = "hybrid"
+            self.num_cpu_workers = 1
+        else:
+            self.num_cpu_workers = 1
+
         self._verify_args()
 
     def _verify_args(self) -> None:
         if self.pipeline_parallel_size > 1:
             raise NotImplementedError(
                 "Pipeline parallelism is not supported yet.")
-        if self.distributed_executor_backend not in ("ray", "mp", None):
+        if self.distributed_executor_backend not in ("ray", "mp", "hybrid", None):
             raise ValueError(
                 "Unrecognized distributed executor backend. Supported values "
-                "are 'ray' or 'mp'.")
+                "are 'ray', 'mp' or 'hybrid'.")
         if not self.disable_custom_all_reduce and self.world_size > 1:
             if is_hip():
                 self.disable_custom_all_reduce = True

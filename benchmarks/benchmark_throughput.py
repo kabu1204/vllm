@@ -83,6 +83,8 @@ def run_vllm(
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
+        load_format="dummy",
+        hybrid_cpu_gpu=True,
         model=model,
         tokenizer=tokenizer,
         quantization=quantization,

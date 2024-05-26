@@ -294,6 +294,10 @@ class LLMEngine:
             from vllm.executor.multiproc_gpu_executor import (
                 MultiprocessingGPUExecutor)
             executor_class = MultiprocessingGPUExecutor
+        elif distributed_executor_backend == "hybrid":
+            initialize_ray_cluster(engine_config.parallel_config)
+            from vllm.executor.hybrid_executor import HybridExecutor
+            executor_class = HybridExecutor
         else:
             from vllm.executor.gpu_executor import GPUExecutor
             executor_class = GPUExecutor
