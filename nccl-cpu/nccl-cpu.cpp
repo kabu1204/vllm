@@ -1,12 +1,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include "c10/util/intrusive_ptr.h"
 #include "cuda_runtime.h"
 #include "cuda_runtime_api.h"
 
 #include "nccl-cpu.hpp"
+#include "torch/csrc/distributed/c10d/Work.hpp"
 
 #define CUDA_CHECK(cmd)                                                      \
   do {                                                                       \
@@ -35,7 +38,7 @@ static inline bool check_device(c10::Device dev1, c10::Device dev2) {
   return dev1.index() == dev2.index() && dev1.type() == dev2.type();
 }
 
-static inline bool is_cpu_process(int rank, int size) {
+static inline int get_cpu_worker_num() {
   static int cpu_worker_num = -1;
   if (cpu_worker_num == -1) {
     const char* cpu_process_num = getenv("VLLM_CPU_WORKER_NUM");
@@ -43,6 +46,14 @@ static inline bool is_cpu_process(int rank, int size) {
       throw std::runtime_error("env[\"VLLM_CPU_WORKER_NUM\"] is not set");
     }
     cpu_worker_num = atoi(cpu_process_num);
+  }
+  return cpu_worker_num;
+}
+
+static inline bool is_cpu_process(int rank, int size) {
+  static int cpu_worker_num = -1;
+  if (cpu_worker_num == -1) {
+    cpu_worker_num = get_cpu_worker_num();
   }
   return rank >= size - cpu_worker_num;
 }
@@ -75,7 +86,7 @@ c10::intrusive_ptr<c10::ivalue::Future> NcclCPUWork::getFuture() {
 NcclCPUBackend::NcclCPUBackend(const c10::intrusive_ptr<::c10d::Store>& store,
                                int rank, int size)
     : Backend(rank, size),
-    ncclPG(store, rank, size - NCCL_CPU_MAX_WORLD_SIZE) {
+    ncclPG(store, rank, size) {
   // 0. Initial check and setup
   if (size >= NCCL_CPU_MAX_WORLD_SIZE) {
     throw std::runtime_error("world size is too big.");
@@ -248,19 +259,19 @@ c10::intrusive_ptr<Work> NcclCPUBackend::_allgather_base(
 // Modify the implementation to conduct real communication asynchronously
 c10::intrusive_ptr<Work> NcclCPUBackend::allreduce(
     std::vector<at::Tensor>& tensors, const AllreduceOptions& opts) {
-  auto& tensor = tensors[0];
-  int rank = getRank();
-  bool is_cuda = tensor.device().is_cuda();
+  // auto& tensor = tensors[0];
+  // int rank = getRank();
+  // bool is_cuda = tensor.device().is_cuda();
 
-  cudaMemcpy(localBuffer, tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDefault);
+  // cudaMemcpy(localBuffer, tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDefault);
 
-  pthread_barrier_wait(&shm->barrier);
+  // pthread_barrier_wait(&shm->barrier);
 
-  // auto outputTensor = at::zeros(tensor.sizes(), tensor.options().device(c10::kCUDA));
-  auto outputTensor = at::from_blob(localBuffer, tensor.sizes(), tensor.strides(), 
-                  tensor.options().device(c10::kCUDA));
+  // // auto outputTensor = at::zeros(tensor.sizes(), tensor.options().device(c10::kCUDA));
+  // auto outputTensor = at::from_blob(localBuffer, tensor.sizes(), tensor.strides(), 
+  //                 tensor.options().device(c10::kCUDA));
 
-  outputTensor += at::ones(tensor.sizes(), tensor.options().device(c10::kCUDA));
+  // outputTensor += at::ones(tensor.sizes(), tensor.options().device(c10::kCUDA));
   // for (int i = 0; i < getSize(); i++) {
   //   // if (i == rank) continue;
   //   outputTensor += at::from_blob(buffers[i], tensor.sizes(), tensor.strides(), 
@@ -269,6 +280,12 @@ c10::intrusive_ptr<Work> NcclCPUBackend::allreduce(
   // cudaMemcpy(tensor.data_ptr(), outputTensor.data_ptr(), tensor.nbytes(), cudaMemcpyDefault);
 
   return c10::make_intrusive<NcclCPUWork>(OpType::ALLREDUCE, nullptr);
+}
+
+c10::intrusive_ptr<Work> NcclCPUBackend::broadcast(
+    std::vector<at::Tensor>& tensors, const BroadcastOptions& opts) {
+  // return c10::make_intrusive<NcclCPUWork>(OpType::BROADCAST, nullptr);
+  return ncclPG.broadcast(tensors, opts);
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::allreduce_coalesced(
@@ -291,18 +308,13 @@ c10::intrusive_ptr<Work> NcclCPUBackend::alltoall_base(
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::barrier(const BarrierOptions& opts) {
-  return ncclPG.barrier(opts);
-}
-
-c10::intrusive_ptr<Work> NcclCPUBackend::broadcast(
-    std::vector<at::Tensor>& tensors, const BroadcastOptions& opts) {
-  return ncclPG.broadcast(tensors, opts);
+  throw std::runtime_error("not supported");
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::gather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors, const GatherOptions& opts) {
-  return ncclPG.gather(outputTensors, inputTensors, opts);
+  return c10::make_intrusive<NcclCPUWork>(OpType::GATHER, nullptr);
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::reduce(

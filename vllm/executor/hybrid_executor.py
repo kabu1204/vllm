@@ -6,7 +6,7 @@ import os
 import torch
 
 import vllm.envs as envs
-from vllm.config import CacheConfig, ModelConfig, SchedulerConfig
+from vllm.config import CacheConfig, ModelConfig, SchedulerConfig, DeviceConfig
 from vllm.executor.executor_base import ExecutorAsyncBase, ExecutorBase
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -26,15 +26,19 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+USE_RAY_COMPILED_DAG = False
+
 class HybridExecutor(DistributedGPUExecutor):
     def _init_executor(self) -> None:
         assert self.parallel_config.distributed_executor_backend == "hybrid"
-        assert self.lora_config is None, "hybrid backend doesn't support LoRA"
+        assert self.lora_config is None, "HybridExecutor doesn't support LoRA"
+        assert self.parallel_config.disable_custom_all_reduce, "HybridExecutor doesn't support custom all-reduce"
         
         # GPU worker args
         self.model_config: ModelConfig
         self.cache_config: CacheConfig
         self.scheduler_config: SchedulerConfig
+        self.device_config: DeviceConfig
         
         # Disable Ray usage stats collection.
         ray_usage = os.environ.get("RAY_USAGE_STATS_ENABLED", "0")
@@ -172,36 +176,6 @@ class HybridExecutor(DistributedGPUExecutor):
         # for debug
         # exit(-1)
 
-    def _init_ray_cpu_workers(self):
-        from vllm.worker.cpu_worker import CPUWorker
-
-        assert self.parallel_config.num_cpu_workers == 1, (
-            "HybridExecutor only supports single CPU worker currently.")
-        
-        self.cpu_workers: List[CPUWorker] = []
-
-        distributed_init_method = get_distributed_init_method(
-            get_ip(), get_open_port())
-        
-        for i in range(self.parallel_config.num_cpu_workers):
-            rank = self.parallel_config.world_size + i
-            worker = CPUWorker(
-                model_config=self.model_config,
-                parallel_config=self.parallel_config,
-                scheduler_config=self.scheduler_config,
-                device_config=self.device_config,
-                cache_config=self.cache_config,
-                load_config=self.load_config,
-                local_rank=0,
-                rank=0,
-                distributed_init_method=distributed_init_method,
-                lora_config=self.lora_config,
-                vision_language_config=self.vision_language_config,
-                kv_cache_dtype=self.cache_config.cache_dtype,
-                is_driver_worker=True,
-            )
-            self.cpu_workers.append(worker)
-
     def _get_worker_kwargs(
             self,
             local_rank: int = 0,
@@ -216,16 +190,18 @@ class HybridExecutor(DistributedGPUExecutor):
             model_config = _verify_and_get_cpu_model_config(self.model_config)
             scheduler_config = _verify_and_get_cpu_scheduler_config(self.scheduler_config)
             cache_config = _verify_and_get_cpu_cache_config(self.cache_config)
+            device_config = _verify_and_get_cpu_device_config(self.device_config)
         else:
             model_config = self.model_config
             scheduler_config = self.scheduler_config
             cache_config = self.cache_config
-            
+            device_config = self.device_config
+
         return dict(
             model_config=model_config,
             parallel_config=self.parallel_config,
             scheduler_config=scheduler_config,
-            device_config=self.device_config,
+            device_config=device_config,
             cache_config=cache_config,
             load_config=self.load_config,
             local_rank=local_rank,
@@ -238,44 +214,33 @@ class HybridExecutor(DistributedGPUExecutor):
             is_cpu_worker=is_cpu_worker,
         )
 
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
-        """Determine the number of available KV blocks by invoking the
-        underlying worker.
-        """
-        return self.driver_worker.determine_num_available_blocks()
-
-    def initialize_cache(self, num_gpu_blocks: int,
-                         num_cpu_blocks: int) -> None:
-        """Initialize the KV cache by invoking the underlying worker.
-        """
-        # NOTE: We log here to avoid multiple logs when number of workers is
-        # greater than one. We could log in the engine, but not all executors
-        # have GPUs.
-        # NOTE: `cpu block` for CPU backend is located on CPU memory but is
-        # referred as `gpu block`. Because we want to reuse the existing block
-        # management procedure.
-        logger.info("# CPU blocks: %d", num_gpu_blocks)
-        self.driver_worker.initialize_cache(num_gpu_blocks, num_cpu_blocks)
-
     def execute_model(
             self,
             execute_model_req: ExecuteModelRequest) -> List[SamplerOutput]:
-        output = self.driver_worker.execute_model(execute_model_req)
-        return output
-
-    def add_lora(self, lora_request: LoRARequest) -> bool:
-        return self.driver_worker.add_lora(lora_request)
-
-    def remove_lora(self, lora_id: int) -> bool:
-        return self.driver_worker.remove_lora(lora_id)
-
-    def list_loras(self) -> Set[int]:
-        return self.driver_worker.list_loras()
+        all_outputs = self._run_workers(
+            "execute_model",
+            driver_kwargs={"execute_model_req": execute_model_req},
+            use_ray_compiled_dag=USE_RAY_COMPILED_DAG)
+        # Only the driver worker returns the sampling results.
+        return all_outputs[0]
 
     def check_health(self) -> None:
         # CPUExecutor will always be healthy as long as
         # it's running.
-        return
+        self._check_if_any_actor_is_dead()
+
+    def _check_if_any_actor_is_dead(self):
+        if not self.workers:
+            return
+
+        dead_actors = []
+        for actor in self.workers:
+            actor_state = ray.state.actors(actor._ray_actor_id.hex())  # pylint: disable=protected-access
+            if actor_state["State"] == "DEAD":
+                dead_actors.append(actor)
+        if dead_actors:
+            raise RuntimeError("At least one Worker is dead. "
+                               f"Dead Workers: {dead_actors}. ")
 
     def _run_workers(
         self,
@@ -390,3 +355,6 @@ def _verify_and_get_cpu_cache_config(config: CacheConfig) -> CacheConfig:
             f" {kv_cache_space}, expect a positive integer value.")
 
     return config
+
+def _verify_and_get_cpu_device_config(config: DeviceConfig) -> DeviceConfig:
+    return DeviceConfig("cpu")

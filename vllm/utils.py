@@ -459,6 +459,7 @@ def is_pin_memory_available() -> bool:
         print_warning_once("Pin memory is not supported on Neuron.")
         return False
     elif is_cpu():
+        print_warning_once("Pin memory is not supported on CPU.")
         return False
     return True
 
@@ -473,6 +474,27 @@ class CudaMemoryProfiler:
         torch.cuda.reset_peak_memory_stats(self.device)
         mem = torch.cuda.max_memory_allocated(self.device)
         return mem
+
+    def __enter__(self):
+        self.initial_memory = self.current_memory_usage()
+        # This allows us to call methods of the context manager if needed
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.final_memory = self.current_memory_usage()
+        self.consumed_memory = self.final_memory - self.initial_memory
+
+        # Force garbage collection
+        gc.collect()
+
+class CPUMemoryProfiler:
+    def __init__(self):
+        self.process = psutil.Process(os.getpid())
+
+    def current_memory_usage(self) -> float:
+        # Return the memory usage in bytes.
+        info = self.process.memory_info()
+        return info.vms
 
     def __enter__(self):
         self.initial_memory = self.current_memory_usage()

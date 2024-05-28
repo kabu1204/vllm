@@ -263,10 +263,10 @@ class DummyModelLoader(BaseModelLoader):
                    cache_config: CacheConfig) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
+                logger.info(f"loading dummy model, dtype={model_config.dtype}, device={device_config.device}")
                 model = _initialize_model(model_config, self.load_config,
                                           lora_config, vision_language_config,
                                           cache_config)
-                print(type(model))
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.
             # initialize_dummy_weights(model)

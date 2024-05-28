@@ -20,7 +20,7 @@ from vllm.model_executor.model_loader import get_model
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (MultiModalData, SamplerOutput, SequenceData,
                            SequenceGroupMetadata)
-from vllm.utils import (CudaMemoryProfiler, get_kv_cache_torch_dtype, is_hip,
+from vllm.utils import (CudaMemoryProfiler, CPUMemoryProfiler, get_kv_cache_torch_dtype, is_hip,
                         is_pin_memory_available, make_tensor_with_pad)
 
 logger = init_logger(__name__)
@@ -129,7 +129,9 @@ class ModelRunner:
         self.lora_manager: Optional[LRUCacheWorkerLoRAManager] = None
 
     def load_model(self) -> None:
-        with CudaMemoryProfiler() as m:
+        from vllm.distributed.parallel_state import is_hybrid_cpu_worker
+        mem_profiler = CPUMemoryProfiler if is_hybrid_cpu_worker() else CudaMemoryProfiler
+        with mem_profiler() as m:
             self.model = get_model(
                 model_config=self.model_config,
                 device_config=self.device_config,
@@ -142,8 +144,8 @@ class ModelRunner:
             )
 
         self.model_memory_usage = m.consumed_memory
-        logger.info("Loading model weights took %.4f GB",
-                    self.model_memory_usage / float(2**30))
+        logger.info("Loading model weights took %.4f GB on %s",
+                    self.model_memory_usage / float(2**30), self.device)
 
         if self.lora_config:
             assert hasattr(self.model, "supported_lora_modules"

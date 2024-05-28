@@ -10,7 +10,7 @@ from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ParallelConfig, SchedulerConfig,
                          SpeculativeConfig, VisionLanguageConfig)
 from vllm.distributed import (broadcast_tensor_dict,
-                              ensure_model_parallel_initialized,
+                              ensure_hybrid_model_parallel_initialized,
                               init_hybrid_distributed_environment,
                               set_custom_all_reduce)
 from vllm.lora.request import LoRARequest
@@ -65,6 +65,7 @@ class HybridWorker(WorkerBase):
             assert self.rank == 0, "The driver worker must have rank 0."
 
         if self.is_cpu_worker:
+            assert device_config.device_type == "cpu", ("Unmatched device type.")
             assert self.rank >= parallel_config.world_size
 
         if self.model_config.trust_remote_code:
@@ -146,6 +147,12 @@ class HybridWorker(WorkerBase):
 
     @torch.inference_mode()
     def determine_num_available_blocks(self) -> Tuple[int, int]:
+        if self.is_cpu_worker:
+            return self.determine_num_available_blocks_cpu()
+        else:
+            return self.determin_num_available_blocks_gpu()
+    
+    def determin_num_available_blocks_gpu(self) -> Tuple[int, int]:
         """Profiles the peak memory usage of the model to determine how many
         KV blocks may be allocated without OOMs.
 
@@ -157,6 +164,7 @@ class HybridWorker(WorkerBase):
             You may limit the usage of GPU memory
             by adjusting the `gpu_memory_utilization` parameter.
         """
+        assert not self.is_cpu_worker, "This method is only for GPU workers."
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
         torch.cuda.empty_cache()
@@ -188,6 +196,26 @@ class HybridWorker(WorkerBase):
             self.model_runner.remove_all_loras()
         gc.collect()
         torch.cuda.empty_cache()
+        return num_gpu_blocks, num_cpu_blocks
+
+    def determine_num_available_blocks_cpu(self) -> Tuple[int, int]:
+        assert self.is_cpu_worker, "This method is only for CPU workers."
+
+        # Because this is a distributed setting, we need to run CPU model
+        self.model_runner.profile_run()
+
+        # For CPU device, the block number will be calculated based on the
+        # cpu_kvcache_space.
+        cache_block_size = self.get_cache_block_size_bytes()
+        num_cpu_blocks = int(self.cache_config.cpu_kvcache_space_bytes //
+                             cache_block_size)
+        num_cpu_blocks = max(num_cpu_blocks, 0)
+
+        # Note: To reuse the cache management procedure,
+        # use cpu cache as 'gpu cache'.
+        num_gpu_blocks = num_cpu_blocks
+        num_cpu_blocks = 0
+        gc.collect()
         return num_gpu_blocks, num_cpu_blocks
 
     def initialize_cache(self, num_gpu_blocks: int,
@@ -327,16 +355,19 @@ def init_hybrid_worker_distributed_environment(
     is_cpu_worker: bool = False,
 ) -> None:
     """Initialize the distributed environment."""
-    # A work-around to support CPU
-    hybrid_distributed_world_size: int = parallel_config.world_size
+    os.environ["VLLM_CPU_WORKER_NUM"] = str(parallel_config.num_cpu_workers)
+    hybrid_distributed_world_size: int = parallel_config.world_size + parallel_config.num_cpu_workers
 
     set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
 
     init_hybrid_distributed_environment(hybrid_distributed_world_size, rank,
                                  distributed_init_method, local_rank,
+                                 backend="nccl-cpu",
                                  is_cpu=is_cpu_worker)
 
-    ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
+    assert parallel_config.pipeline_parallel_size == 1, (
+        "HybridWorker does not support pipeline parallelism.")
+    ensure_hybrid_model_parallel_initialized(hybrid_distributed_world_size,
                                       parallel_config.pipeline_parallel_size)
 
 

@@ -85,6 +85,7 @@ def run_vllm(
     llm = LLM(
         load_format="dummy",
         hybrid_cpu_gpu=True,
+        disable_custom_all_reduce=True,
         model=model,
         tokenizer=tokenizer,
         quantization=quantization,

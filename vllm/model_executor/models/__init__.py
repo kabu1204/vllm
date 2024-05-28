@@ -6,6 +6,8 @@ import torch.nn as nn
 from vllm.logger import init_logger
 from vllm.utils import is_hip
 
+from vllm.distributed import is_hybrid_environment
+
 logger = init_logger(__name__)
 
 # Architecture -> (module, class).
@@ -102,6 +104,8 @@ class ModelRegistry:
                     model_arch, _ROCM_PARTIALLY_SUPPORTED_MODELS[model_arch])
 
         module_name, model_cls_name = _MODELS[model_arch]
+        if is_hybrid_environment():
+            module_name = f"{module_name}_hybrid"
         module = importlib.import_module(
             f"vllm.model_executor.models.{module_name}")
         return getattr(module, model_cls_name, None)

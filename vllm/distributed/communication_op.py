@@ -282,6 +282,7 @@ def broadcast_tensor_dict(
         tensor_dict = {}
         async_handles = []
         for key, value in recv_metadata_list[0]:
+            print(f"[rank{rank}]: {key}: {value}")
             if isinstance(value, TensorMetadata):
                 tensor = torch.empty(value.size,
                                      dtype=value.dtype,

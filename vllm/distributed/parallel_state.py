@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import torch
 from torch.distributed import ProcessGroup
+import nccl_cpu
 
 import vllm.envs as envs
 from vllm.logger import init_logger
@@ -69,6 +70,17 @@ def get_local_rank():
     global _LOCAL_RANK
     return _LOCAL_RANK
 
+_IS_HYBRID_ENV = False
+_IS_HYBRID_CPU_WORKER = False
+
+def is_hybrid_environment():
+    global _IS_HYBRID_ENV
+    return _IS_HYBRID_ENV
+
+def is_hybrid_cpu_worker():
+    global _IS_HYBRID_CPU_WORKER
+    return _IS_HYBRID_CPU_WORKER
+
 # Make this use custom collective communication extension
 def init_hybrid_distributed_environment(
     world_size: int = -1,
@@ -78,9 +90,6 @@ def init_hybrid_distributed_environment(
     backend: str = "nccl",
     is_cpu: bool = False,
 ):
-    if is_cpu:
-        # TODO: support hybrid GPU-CPU collective comminications
-        return
     logger.info(
         "world_size=%d rank=%d local_rank=%d "
         "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
@@ -114,12 +123,133 @@ def init_hybrid_distributed_environment(
         _LOCAL_RANK = local_rank
         # A small all_reduce for warmup.
         data = torch.zeros(1)
-        if torch.cuda.is_available():
+        if not is_cpu and torch.cuda.is_available():
             data = data.to(device=f"cuda:{local_rank}")
         torch.distributed.all_reduce(data)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         del data
+
+        global _IS_HYBRID_CPU_WORKER
+        _IS_HYBRID_CPU_WORKER = is_cpu
+
+        global _IS_HYBRID_ENV
+        _IS_HYBRID_ENV = True
+
+def ensure_hybrid_model_parallel_initialized(
+    tensor_model_parallel_size: int,
+    pipeline_model_parallel_size: int,
+    backend: Optional[str] = None,
+) -> None:
+    """Helper to initialize model parallel groups if they are not initialized,
+    or ensure tensor-parallel and pipeline-parallel sizes are equal to expected
+    values if the model parallel groups are initialized.
+    """
+    # get the backend of _DEVICE_WORLD_GROUP
+    backend = backend or torch.distributed.get_backend()
+    if not model_parallel_is_initialized():
+        initialize_hybrid_model_parallel(tensor_model_parallel_size,
+                                  pipeline_model_parallel_size, backend)
+        return
+
+    assert (
+        get_tensor_model_parallel_world_size() == tensor_model_parallel_size
+    ), ("tensor parallel group already initialized, but of unexpected size: "
+        f"{get_tensor_model_parallel_world_size()=} vs. "
+        f"{tensor_model_parallel_size=}")
+    assert (get_pipeline_model_parallel_world_size(
+    ) == pipeline_model_parallel_size), (
+        "pipeline parallel group already initialized, but of unexpected size: "
+        f"{get_pipeline_model_parallel_world_size()=} vs. "
+        f"{pipeline_model_parallel_size=}")
+
+def initialize_hybrid_model_parallel(
+    tensor_model_parallel_size: int = 1,
+    pipeline_model_parallel_size: int = 1,
+    backend: Optional[str] = None,
+) -> None:
+    """
+    Initialize model parallel groups.
+
+    Arguments:
+        tensor_model_parallel_size: number of GPUs used for tensor model
+            parallelism.
+        pipeline_model_parallel_size: number of GPUs used for pipeline model
+            parallelism.
+
+    Let's say we have a total of 8 GPUs denoted by g0 ... g7 and we
+    use 2 GPUs to parallelize the model tensor, and 4 GPUs to parallelize
+    the model pipeline. The present function will
+    create 4 tensor model-parallel groups and 2 pipeline model-parallel groups:
+        4 tensor model-parallel groups:
+            [g0, g1], [g2, g3], [g4, g5], [g6, g7]
+        2 pipeline model-parallel groups:
+            [g0, g2, g4, g6], [g1, g3, g5, g7]
+    Note that for efficiency, the caller should make sure adjacent ranks
+    are on the same DGX box. For example if we are using 2 DGX-1 boxes
+    with a total of 16 GPUs, rank 0 to 7 belong to the first box and
+    ranks 8 to 15 belong to the second box.
+    """
+    # Get world size and rank. Ensure some consistencies.
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+    # get the backend of _DEVICE_WORLD_GROUP
+    backend = backend or torch.distributed.get_backend()
+
+    if (world_size !=
+            tensor_model_parallel_size * pipeline_model_parallel_size):
+        raise RuntimeError(
+            f"world_size ({world_size}) is not equal to "
+            f"tensor_model_parallel_size ({tensor_model_parallel_size}) x "
+            f"pipeline_model_parallel_size ({pipeline_model_parallel_size})")
+
+    num_tensor_model_parallel_groups: int = (world_size //
+                                             tensor_model_parallel_size)
+    num_pipeline_model_parallel_groups: int = (world_size //
+                                               pipeline_model_parallel_size)
+    rank = torch.distributed.get_rank()
+
+    # Build the tensor model-parallel groups.
+    global _TP_DEVICE_GROUP, _TP_CPU_GROUP
+    global _TP_PYNCCL_COMMUNICATOR, _TP_CA_COMMUNICATOR
+    assert _TP_DEVICE_GROUP is None, (
+        "tensor model parallel group is already initialized")
+    for i in range(num_tensor_model_parallel_groups):
+        ranks = list(
+            range(i * tensor_model_parallel_size,
+                  (i + 1) * tensor_model_parallel_size))
+        group = torch.distributed.new_group(ranks, backend=backend)
+        cpu_group = torch.distributed.new_group(ranks, backend="gloo")
+        if rank in ranks:
+            _TP_DEVICE_GROUP = group
+            _TP_CPU_GROUP = cpu_group
+
+    # from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+    # _TP_PYNCCL_COMMUNICATOR = PyNcclCommunicator(
+    #     group=_TP_CPU_GROUP,
+    #     device=_LOCAL_RANK,
+    # )
+
+    # Initialize a custom fast all-reduce implementation.
+    if _ENABLE_CUSTOM_ALL_REDUCE:
+        from vllm.distributed.device_communicators.custom_all_reduce import (
+            CustomAllreduce)
+        _TP_CA_COMMUNICATOR = CustomAllreduce(
+            group=_TP_CPU_GROUP,
+            device=_LOCAL_RANK,
+        )
+
+    # Build the pipeline model-parallel groups.
+    global _PP_DEVICE_GROUP
+    global _PP_GLOBAL_RANKS
+    assert _PP_DEVICE_GROUP is None, (
+        "pipeline model parallel group is already initialized")
+    for i in range(num_pipeline_model_parallel_groups):
+        ranks = list(range(i, world_size, num_pipeline_model_parallel_groups))
+        group = torch.distributed.new_group(ranks, backend=backend)
+        if rank in ranks:
+            _PP_DEVICE_GROUP = group
+            _PP_GLOBAL_RANKS = ranks
 
 
 def init_distributed_environment(
