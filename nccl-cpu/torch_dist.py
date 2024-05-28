@@ -9,19 +9,21 @@ import nccl_cpu
 def allreduce(rank, size):
     """ Simple allreduce communication. """
     # group = dist.new_group([0, 1])
+    device = "cuda:0" if rank == 0 else "cpu"
     if rank == 0:
-        tensor = 2*torch.ones(1, device='cuda:0')
+        tensor = 2*torch.ones(1, device=device)
     else:
-        tensor = torch.ones(1, device='cuda:1')
+        tensor = torch.ones(1, device=device)
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     print('Rank ', rank, ' has data ', tensor)
 
 def allgather(rank, size):
     """ Simple allgather communication. """
     # group = dist.new_group([0, 1])
-    device = f"cuda:{rank}";
-    tensor_list = [rank*torch.ones(2, dtype=torch.float32, device=device) for _ in range(2)]
-    tensor = torch.arange(2, dtype=torch.float32, device=device) + 1 + (2 * rank)
+    device = "cuda:0" if rank == 0 else "cpu"
+    pin_memory = True if device == "cpu" else False
+    tensor_list = [rank*torch.zeros(2, dtype=torch.float32, device=device, pin_memory=pin_memory) for _ in range(2)]
+    tensor = torch.arange(2, dtype=torch.float32, device=device, pin_memory=pin_memory) + 1 + (2 * rank)
 
     dist.all_gather(tensor_list, tensor)
     print('Rank ', rank, ' has data ', tensor_list)
@@ -41,7 +43,7 @@ def run(rank, size):
     # allreduce(rank, size)
     allgather(rank, size)
 
-def init_process(rank, size, fn, backend='cuda:nccl-cpu'):
+def init_process(rank, size, fn, backend='nccl-cpu'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29501'

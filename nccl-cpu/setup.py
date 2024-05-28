@@ -5,18 +5,21 @@ from torch.utils import cpp_extension
 
 sources = ["nccl-cpu.cpp", "cuda_ipc.cpp"]
 include_dirs = [f"{os.path.dirname(os.path.abspath(__file__))}/"]
+sources = [os.path.abspath(f) for f in sources]
 
 if torch.cuda.is_available():
     module = cpp_extension.CUDAExtension(
         name="nccl_cpu",
         sources=sources,
         include_dirs=include_dirs,
+        extra_compile_args=['-g', '-O2'],
     )
 else:
     module = cpp_extension.CppExtension(
         name="nccl_cpu",
         sources=sources,
         include_dirs=include_dirs,
+        extra_compile_args=['-g', '-O2'],
     )
 
 setup(

@@ -10,12 +10,14 @@
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
 #include <pybind11/chrono.h>
 #include "cuda_ipc.h"
+#include <pthread.h>
 
 #define NCCL_CPU_MAX_WORLD_SIZE 8
 
 struct SharedMemory {
-  SemBarrier barrier;
-  size_t size;
+  pthread_barrier_t barrier;
+  volatile size_t size;
+  cudaIpcMemHandle_t ghandle[NCCL_CPU_MAX_WORLD_SIZE];  // shared cuda IPC mem handle
   char data[];
 };
 
@@ -25,6 +27,8 @@ class NcclCPUBackend : public Backend {
  public:
 
   NcclCPUBackend(const c10::intrusive_ptr<::c10d::Store>& store, int rank, int size);
+
+  ~NcclCPUBackend() override;
 
   c10::intrusive_ptr<Work> broadcast(
       std::vector<at::Tensor>& data,
@@ -47,6 +51,11 @@ class NcclCPUBackend : public Backend {
       std::vector<std::vector<at::Tensor>>& outputTensors,
       std::vector<at::Tensor>& inputTensors,
       const AllgatherOptions& opts = AllgatherOptions()) override;
+
+  c10::intrusive_ptr<Work> allgatherZeroCopy(
+      std::vector<std::vector<at::Tensor>>& outputTensors,
+      std::vector<at::Tensor>& inputTensors,
+      const AllgatherOptions& opts = AllgatherOptions());
 
   c10::intrusive_ptr<Work> _allgather_base(
       at::Tensor& outputBuffer,
@@ -117,9 +126,15 @@ private:
   ProcessGroupNCCL ncclPG;
   SharedMemoryHandle sharedMemoryInfo;
   SharedMemory* shm;
-  void* buffers[NCCL_CPU_MAX_WORLD_SIZE];
+  cudaIpcMemPool localPool;
+  void* cudaBuffers[NCCL_CPU_MAX_WORLD_SIZE];   // device shared buffer addresses
+  void* cudaLocalBuffer;
+
+  void* buffers[NCCL_CPU_MAX_WORLD_SIZE];   // host shared buffer addresses
   void* localBuffer;
   void* dptr;   // device pointer of shared host memory
+
+  bool isCPU;
 #ifdef NCCL_CPU_POLL
   std::thread* pollWorker_{nullptr};
 #endif

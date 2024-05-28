@@ -54,78 +54,98 @@ void SharedMemoryRegisterPortable(void** dptr, void *ptr, size_t sz) {
     // printf("SharedMemoryRegisterPortable: %p\n", dptr);
 }
 
+void SharedMemoryUnregisterPortable(void *ptr) {
+    CUDA_CHECK(cudaHostUnregister(ptr));
+}
+
 int SharedMemoryCreate(const char *name, size_t sz, SharedMemoryHandle *info) {
     sz = (sz + 4095) & ~4095;   // align 4KB boundary
 
     // Create a shared memory segment
-    int shm_fd = shm_open(name, O_CREAT | O_RDWR, 0777);
+    int shm_fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0777);
     if (shm_fd == -1) {
         perror("shm_open");
-        return -1;
+        exit(EXIT_FAILURE);
     }
     
     // Set the size of the shared memory segment
     if (ftruncate(shm_fd, sz) == -1) {
         perror("ftruncate");
-        return -1;
+        shm_unlink(name);
+        exit(EXIT_FAILURE);
     }
     
     // Map the shared memory segment into the address space of the process
     void* ptr = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (ptr == MAP_FAILED) {
         perror("mmap");
-        return -1;
-    }
-    
-    // Close the shared memory segment
-    if (close(shm_fd) == -1) {
-        perror("close");
-        return -1;
+        shm_unlink(name);
+        exit(EXIT_FAILURE);
     }
     
     info->fd = shm_fd;
     info->size = sz;
     info->ptr = ptr;
-
-    printf("SharedMemoryCreate: %p\n", ptr);
+    strncpy(info->name, name, sizeof(info->name));
 
     return 0;
 }
 
-// int SharedMemoryOpen(const char *name, size_t sz, SharedMemoryHandle *info) {
-//     // Open a shared memory segment
-//     int shm_fd = shm_open(name, O_RDWR, 0666);
-//     if (shm_fd == -1) {
-//         perror("shm_open");
-//         return -1;
-//     }
+int SharedMemoryOpen(const char *name, size_t sz, SharedMemoryHandle *info) {
+    sz = (sz + 4095) & ~4095;   // align 4KB boundary
+
+    // Create a shared memory segment
+    int shm_fd = shm_open(name, O_RDWR, 0777);
+    if (shm_fd == -1) {
+        perror("shm_open");
+        exit(EXIT_FAILURE);
+    }
     
-//     // Map the shared memory segment into the address space of the process
-//     void* ptr = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-//     if (ptr == MAP_FAILED) {
-//         perror("mmap");
-//         return -1;
-//     }
+    // Map the shared memory segment into the address space of the process
+    void* ptr = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (ptr == MAP_FAILED) {
+        perror("mmap");
+        shm_unlink(name);
+        exit(EXIT_FAILURE);
+    }
     
-//     info->fd = shm_fd;
-//     info->size = sz;
-//     info->ptr = ptr;
-//     CUDA_CHECK(cudaHostGetDevicePointer(&info->dptr, ptr, 0));
-    
-//     return 0;
-// }
+    info->fd = shm_fd;
+    info->size = sz;
+    info->ptr = ptr;
+    strncpy(info->name, name, sizeof(info->name));
+
+    return 0;
+}
 
 void SharedMemoryClose(SharedMemoryHandle *info) {
     // Unmap the shared memory segment
     if (munmap(info->ptr, info->size) == -1) {
         perror("munmap");
-        return;
+        exit(EXIT_FAILURE);
     }
     
     // Close the shared memory segment
+    shm_unlink(info->name);
     if (close(info->fd) == -1) {
         perror("close");
-        return;
+        exit(EXIT_FAILURE);
     }
 }
 
+void cudaIpcInitPool(int devIdx, size_t sz, cudaIpcMemPool* pool, cudaIpcMemHandle_t* handle) {
+    sz = (sz + ~66535) & ~66535;   // align 64KB boundary
+    
+    CUDA_CHECK(cudaSetDevice(devIdx));
+    CUDA_CHECK(cudaMalloc(&pool->base, sz));
+
+
+    struct cudaPointerAttributes attr;
+    CUDA_CHECK(cudaPointerGetAttributes(&attr, pool->base));
+    printf("IPC INIT: %p, type %d\n", pool->base, attr.type);
+
+    CUDA_CHECK(cudaIpcGetMemHandle(handle, pool->base));
+
+    pool->handle = handle;
+    pool->sz = sz;
+    pool->devIdx = devIdx;
+}
