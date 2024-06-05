@@ -12,6 +12,8 @@ import nccl_cpu
 import vllm.envs as envs
 from vllm.logger import init_logger
 
+from functools import lru_cache
+
 logger = init_logger(__name__)
 
 _ENABLE_CUSTOM_ALL_REDUCE = True
@@ -73,9 +75,10 @@ def get_local_rank():
 _IS_HYBRID_ENV = False
 _IS_HYBRID_CPU_WORKER = False
 
+@lru_cache(maxsize=None)
 def is_hybrid_environment():
-    global _IS_HYBRID_ENV
-    return _IS_HYBRID_ENV
+    import os
+    return os.environ.get("VLLM_HYBRID_ENV", "0") == "1"
 
 def is_hybrid_cpu_worker():
     global _IS_HYBRID_CPU_WORKER

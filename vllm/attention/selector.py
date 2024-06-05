@@ -8,6 +8,9 @@ import vllm.envs as envs
 from vllm.attention.backends.abstract import AttentionBackend
 from vllm.logger import init_logger
 from vllm.utils import is_cpu, is_hip
+from vllm.distributed import (get_tensor_model_parallel_world_size,
+                              is_hybrid_cpu_worker,
+                              is_hybrid_environment)
 
 logger = init_logger(__name__)
 
@@ -33,6 +36,9 @@ def get_attn_backend(
     backend = _which_attn_to_use(num_heads, head_size, num_kv_heads,
                                  sliding_window, dtype, kv_cache_dtype,
                                  block_size)
+    if is_hybrid_environment():
+        backend = _Backend.TORCH_SDPA
+
     if backend == _Backend.FLASH_ATTN:
         from vllm.attention.backends.flash_attn import (  # noqa: F401
             FlashAttentionBackend)

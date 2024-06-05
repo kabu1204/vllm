@@ -284,19 +284,38 @@ c10::intrusive_ptr<Work> NcclCPUBackend::allreduce(
 
 c10::intrusive_ptr<Work> NcclCPUBackend::broadcast(
     std::vector<at::Tensor>& tensors, const BroadcastOptions& opts) {
-  // return c10::make_intrusive<NcclCPUWork>(OpType::BROADCAST, nullptr);
-  return ncclPG.broadcast(tensors, opts);
+  auto& tensor = tensors[0];
+  int rank = getRank();
+  bool is_cuda = tensor.device().is_cuda();
+
+  if (opts.rootRank == rank) {
+    if (is_cuda) {
+      cudaMemcpy(localBuffer, tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToHost);
+    } else {
+      std::memcpy(localBuffer, tensor.data_ptr(), tensor.nbytes());
+    }
+    pthread_barrier_wait(&shm->barrier);
+  } else {
+    pthread_barrier_wait(&shm->barrier);
+    if (is_cuda) {
+      cudaMemcpy(tensor.data_ptr(), buffers[opts.rootRank], tensor.nbytes(), cudaMemcpyHostToDevice);
+    } else {
+      std::memcpy(tensor.data_ptr(), buffers[opts.rootRank], tensor.nbytes());
+    }
+  }
+
+  return c10::make_intrusive<NcclCPUWork>(OpType::BROADCAST, nullptr);
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::allreduce_coalesced(
     std::vector<at::Tensor>& tensors, const AllreduceCoalescedOptions& opts) {
-  return ncclPG.allreduce_coalesced(tensors, opts);
+  throw std::runtime_error("not supported");
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::alltoall(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors, const AllToAllOptions& opts) {
-  ncclPG.alltoall(outputTensors, inputTensors, opts);
+  throw std::runtime_error("not supported");
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::alltoall_base(
@@ -319,7 +338,7 @@ c10::intrusive_ptr<Work> NcclCPUBackend::gather(
 
 c10::intrusive_ptr<Work> NcclCPUBackend::reduce(
     std::vector<at::Tensor>& tensors, const ReduceOptions& opts) {
-  return ncclPG.reduce(tensors, opts);
+  throw std::runtime_error("not supported");
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::reduce_scatter(
@@ -333,7 +352,7 @@ c10::intrusive_ptr<Work> NcclCPUBackend::scatter(
     std::vector<at::Tensor>& outputTensors,
     std::vector<std::vector<at::Tensor>>& inputTensors,
     const ScatterOptions& opts) {
-  return ncclPG.scatter(outputTensors, inputTensors, opts);
+  throw std::runtime_error("not supported");
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::send(std::vector<at::Tensor>& tensors,

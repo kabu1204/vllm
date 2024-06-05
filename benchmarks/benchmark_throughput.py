@@ -83,7 +83,7 @@ def run_vllm(
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
-        load_format="dummy",
+        # load_format="dummy",
         hybrid_cpu_gpu=True,
         disable_custom_all_reduce=True,
         model=model,
@@ -213,9 +213,11 @@ def main(args: argparse.Namespace):
         args.tokenizer, trust_remote_code=args.trust_remote_code)
     if args.dataset is None:
         # Synthesize a prompt with the given input length.
-        prompt = "hi" * (args.input_len - 1)
+        # prompt = "hi" * (args.input_len - 1)
+        prompt = "You are a useful assistant"
         requests = [(prompt, args.input_len, args.output_len)
                     for _ in range(args.num_prompts)]
+        # requests = 
     else:
         requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
                                    args.output_len)

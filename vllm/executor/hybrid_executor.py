@@ -150,6 +150,8 @@ class HybridExecutor(DistributedGPUExecutor):
             VLLM_INSTANCE_ID,
             "VLLM_TRACE_FUNCTION":
             str(envs.VLLM_TRACE_FUNCTION),
+            "VLLM_HYBRID_ENV":
+            "1",
         }, ) for (node_id, _) in worker_node_and_gpu_ids]
         self._run_workers("update_environment_variables",
                           all_args=all_args_to_update_environment_variables)
@@ -310,9 +312,10 @@ class HybridExecutor(DistributedGPUExecutor):
 def _verify_and_get_cpu_model_config(config: ModelConfig) -> ModelConfig:
     import copy
     config = copy.deepcopy(config)
-    if config.dtype == torch.float16:
-        logger.warning("float16 is not supported on CPU, casting to bfloat16.")
-        config.dtype = torch.bfloat16
+    cpu_torch_type = torch.bfloat16
+    if config.dtype != cpu_torch_type:
+        logger.warning(f"{config.dtype} is not supported on CPU, casting to {cpu_torch_type}.")
+        config.dtype = cpu_torch_type
     if not config.enforce_eager:
         logger.warning(
             "CUDA graph is not supported on CPU, fallback to the eager "

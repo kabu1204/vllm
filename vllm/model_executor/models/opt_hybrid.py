@@ -128,9 +128,13 @@ class OPTDecoderLayer(nn.Module):
         )
         self.do_layer_norm_before = config.do_layer_norm_before
 
+        self.is_cpu_worker = is_hybrid_cpu_worker()
+        self.cast_dtype = torch.float32 if self.is_cpu_worker else None
+
         self.self_attn_layer_norm = nn.LayerNorm(
             self.embed_dim,
-            elementwise_affine=config.layer_norm_elementwise_affine)
+            elementwise_affine=config.layer_norm_elementwise_affine,
+            dtype=self.cast_dtype)
         self.fc1 = ColumnParallelLinear(
             self.embed_dim,
             config.ffn_dim,
@@ -147,7 +151,8 @@ class OPTDecoderLayer(nn.Module):
         )
         self.final_layer_norm = nn.LayerNorm(
             self.embed_dim,
-            elementwise_affine=config.layer_norm_elementwise_affine)
+            elementwise_affine=config.layer_norm_elementwise_affine,
+            dtype=self.cast_dtype)
 
     def forward(
         self,
@@ -159,7 +164,10 @@ class OPTDecoderLayer(nn.Module):
         residual = hidden_states
         # 125m, 1.7B, ..., 175B applies layer norm BEFORE attention
         if self.do_layer_norm_before:
-            hidden_states = self.self_attn_layer_norm(hidden_states)
+            if self.is_cpu_worker:
+                hidden_states = self.self_attn_layer_norm(hidden_states.float()).to(dtype=torch.bfloat16)
+            else:
+                hidden_states = self.self_attn_layer_norm(hidden_states)
         hidden_states = self.self_attn(hidden_states=hidden_states,
                                        kv_cache=kv_cache,
                                        attn_metadata=attn_metadata)

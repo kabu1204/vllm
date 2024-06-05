@@ -18,7 +18,7 @@ from vllm.model_executor import set_random_seed
 from vllm.sequence import ExecuteModelRequest, PoolerOutput, SamplerOutput
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.embedding_model_runner import EmbeddingModelRunner
-from vllm.worker.model_runner import ModelRunner
+from vllm.worker.hybrid_model_runner import HybridModelRunner
 from vllm.worker.worker_base import WorkerBase
 
 class HybridWorker(WorkerBase):
@@ -77,9 +77,8 @@ class HybridWorker(WorkerBase):
             assert not self.lora_config, (
                 "To be tested: vision language model with LoRA settings.")
 
-        ModelRunnerClass = (EmbeddingModelRunner if
-                            self.model_config.embedding_mode else ModelRunner)
-        self.model_runner = ModelRunnerClass(
+        assert not self.model_config.embedding_mode, "HybridWorker does not support embedding mode."
+        self.model_runner = HybridModelRunner(
             model_config,
             parallel_config,
             scheduler_config,

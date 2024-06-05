@@ -35,7 +35,7 @@ _BATCH_SIZES_TO_CAPTURE = [1, 2, 4] + [
 ]
 
 
-class ModelInput(NamedTuple):
+class HybridModelInput(NamedTuple):
     input_tokens: torch.Tensor
     input_positions: torch.Tensor
     attn_metadata: Optional[AttentionMetadata]
@@ -51,7 +51,7 @@ class ModelInput(NamedTuple):
 
     @classmethod
     def empty(cls, device):
-        return ModelInput(
+        return HybridModelInput(
             input_tokens=torch.empty(0, device=device),
             input_positions=torch.empty(0, device=device),
             attn_metadata=None,
@@ -67,7 +67,7 @@ class ModelInput(NamedTuple):
         )
 
 
-class ModelRunner:
+class HybridModelRunner:
 
     def __init__(
         self,
@@ -213,7 +213,7 @@ class ModelRunner:
     def _prepare_model_input(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-    ) -> ModelInput:
+    ) -> HybridModelInput:
         """Prepare the model input based on a given sequence group.
 
         The API assumes seq_group_metadata_list is sorted by prefill -> decode.
@@ -264,12 +264,15 @@ class ModelRunner:
         paged_kv_last_page_len: List[int] = []
 
         if len(seq_group_metadata_list) == 0:
-            return ModelInput.empty(self.device)
+            return HybridModelInput.empty(self.device)
 
+        # NOTE: We assume that all sequences in the group are all prompts or
+        # all decodes.
+        is_prompt = seq_group_metadata_list[0].is_prompt
         for seq_group_metadata in seq_group_metadata_list:
             seq_ids = list(seq_group_metadata.seq_data.keys())
-            is_prompt = seq_group_metadata.is_prompt
-
+            assert seq_group_metadata.is_prompt == is_prompt, ("All sequences in the group are "
+                                                               "all prompts or all decodes")
             for seq_id in seq_ids:
                 computed_block_nums = seq_group_metadata.computed_block_nums
                 if (self.scheduler_config is not None
@@ -528,6 +531,7 @@ class ModelRunner:
                                            device=self.device)
 
         if self.attn_backend.get_name() == "flashinfer":
+            raise NotImplementedError("HybridModelRunner doesn't support Flashinfer backend.")
             if not hasattr(self, "flashinfer_workspace_buffer"):
                 # Allocate 16MB workspace buffer
                 # Follow the example of flashinfer: https://docs.flashinfer.ai/api/python/decode.html
@@ -564,21 +568,24 @@ class ModelRunner:
                 seq_start_loc=seq_start_loc,
                 data_type=kv_cache_dtype)
         else:
+            assert self.attn_backend.get_name() == "torch-sdpa", \
+                    ("HybridModelRunner only supports torch-sdpa backend currently.")
             attn_metadata = self.attn_backend.make_metadata(
+                is_prompt=is_prompt,
                 num_prefills=num_prefills,
                 slot_mapping=slot_mapping_tensor,
                 num_prefill_tokens=num_prefill_tokens,
                 num_decode_tokens=num_decode_tokens,
                 seq_lens=seq_lens,
                 seq_lens_tensor=seq_lens_tensor,
-                max_query_len=max_query_len,
-                max_prefill_seq_len=max_prefill_seq_len,
+                # max_query_len=max_query_len,
+                # max_prefill_seq_len=max_prefill_seq_len,
                 max_decode_seq_len=max_decode_seq_len,
-                query_start_loc=query_start_loc,
-                seq_start_loc=seq_start_loc,
-                context_lens_tensor=context_lens_tensor,
+                # query_start_loc=query_start_loc,
+                # seq_start_loc=seq_start_loc,
+                # context_lens_tensor=context_lens_tensor,
                 block_tables=block_tables,
-                use_cuda_graph=use_captured_graph,
+                # use_cuda_graph=use_captured_graph,
             )
 
         if self.lora_config:
@@ -589,7 +596,7 @@ class ModelRunner:
         else:
             lora_mapping = None
 
-        return ModelInput(
+        return HybridModelInput(
             input_tokens=input_tokens_tensor,
             input_positions=input_positions_tensor,
             attn_metadata=attn_metadata,
@@ -885,20 +892,21 @@ class ModelRunner:
             for batch_size in reversed(batch_size_capture_list):
                 # Create dummy attn_metadata.
                 attn_metadata = self.attn_backend.make_metadata(
+                    is_prompt=True,
                     num_prefills=0,
                     num_prefill_tokens=0,
                     num_decode_tokens=batch_size,
                     slot_mapping=slot_mapping[:batch_size],
-                    seq_lens=None,
+                    seq_lens=seq_lens.tolist(),
                     seq_lens_tensor=seq_lens[:batch_size],
-                    max_query_len=None,
-                    max_prefill_seq_len=0,
+                    # max_query_len=None,
+                    # max_prefill_seq_len=0,
                     max_decode_seq_len=self.max_seq_len_to_capture,
-                    query_start_loc=None,
-                    seq_start_loc=None,
-                    context_lens_tensor=None,
+                    # query_start_loc=None,
+                    # seq_start_loc=None,
+                    # context_lens_tensor=None,
                     block_tables=block_tables[:batch_size],
-                    use_cuda_graph=True,
+                    # use_cuda_graph=True,
                 )
 
                 if self.lora_config:

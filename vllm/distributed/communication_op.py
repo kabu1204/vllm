@@ -11,7 +11,8 @@ from .parallel_state import (get_cpu_world_group,
                              get_tensor_model_parallel_rank,
                              get_tensor_model_parallel_world_size,
                              get_tp_ca_communicator,
-                             get_tp_pynccl_communicator)
+                             get_tp_pynccl_communicator,
+                             is_hybrid_environment)
 
 
 @dataclass
@@ -222,7 +223,8 @@ def broadcast_tensor_dict(
     tensor_dict: Optional[Dict[Any, Union[torch.Tensor, Any]]] = None,
     src: int = 0,
     group: Optional[ProcessGroup] = None,
-    metadata_group: Optional[ProcessGroup] = None
+    metadata_group: Optional[ProcessGroup] = None,
+    device: torch.device = None,
 ) -> Optional[Dict[Any, Union[torch.Tensor, Any]]]:
     """Broadcast the input tensor dictionary.
     `group` is used to broadcast the tensors, while `metadata_group` is used
@@ -257,7 +259,12 @@ def broadcast_tensor_dict(
             if tensor.numel() == 0:
                 # Skip broadcasting empty tensors.
                 continue
-            if tensor.is_cpu:
+            if is_hybrid_environment():
+                handle = torch.distributed.broadcast(tensor,
+                                                     src=src,
+                                                     group=group,
+                                                     async_op=True)
+            elif tensor.is_cpu:
                 # use metadata_group for CPU tensors
                 handle = torch.distributed.broadcast(tensor,
                                                      src=src,
@@ -272,7 +279,6 @@ def broadcast_tensor_dict(
             async_handles.append(handle)
         for async_handle in async_handles:
             async_handle.wait()
-
     else:
         recv_metadata_list = [None]
         torch.distributed.broadcast_object_list(recv_metadata_list,
@@ -282,16 +288,20 @@ def broadcast_tensor_dict(
         tensor_dict = {}
         async_handles = []
         for key, value in recv_metadata_list[0]:
-            print(f"[rank{rank}]: {key}: {value}")
             if isinstance(value, TensorMetadata):
                 tensor = torch.empty(value.size,
                                      dtype=value.dtype,
-                                     device=value.device)
+                                     device=device)
                 if tensor.numel() == 0:
                     # Skip broadcasting empty tensors.
                     tensor_dict[key] = tensor
                     continue
-                if tensor.is_cpu:
+                if is_hybrid_environment():
+                    handle = torch.distributed.broadcast(tensor,
+                                                     src=src,
+                                                     group=group,
+                                                     async_op=True)
+                elif tensor.is_cpu:
                     # use metadata_group for CPU tensors
                     handle = torch.distributed.broadcast(tensor,
                                                          src=src,

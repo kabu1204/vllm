@@ -262,7 +262,8 @@ class LLMEngine:
                 num_gpu_blocks_override)
             num_gpu_blocks = num_gpu_blocks_override
 
-        exit(-1)
+        # for debug
+        # exit(-1)
 
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks

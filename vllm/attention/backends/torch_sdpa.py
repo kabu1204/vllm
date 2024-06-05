@@ -189,7 +189,7 @@ class TorchSDPABackendImpl(AttentionImpl[TorchSDPAMetadata]):
                 start = 0
                 output = torch.empty(
                     (num_tokens, self.num_heads, self.head_size),
-                    dtype=query.dtype)
+                    dtype=query.dtype, device=query.device)
                 for seq_len, mask in zip(attn_metadata.seq_lens,
                                          attn_metadata.attn_bias):
                     end = start + seq_len
@@ -205,6 +205,8 @@ class TorchSDPABackendImpl(AttentionImpl[TorchSDPAMetadata]):
                     start = end
             else:
                 # prefix-enabled attention
+                print(kv_cache.size())
+                # TODO(ycy): implement prefix-enabled prefill attention
                 raise RuntimeError(
                     "Torch SDPA backend doesn't support prefix decoding.")
 
