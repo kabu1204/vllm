@@ -291,13 +291,19 @@ class ModelConfig:
         # the tensor parallel size. We will replicate the KV heads in the
         # case where the number of KV heads is smaller than the tensor
         # parallel size so each GPU has at least one KV head.
+        n_nodes = parallel_config.tensor_parallel_size
+        if parallel_config.hybrid:
+            n_nodes += parallel_config.num_cpu_workers
         return max(1,
-                   total_num_kv_heads // parallel_config.tensor_parallel_size)
+                   total_num_kv_heads // n_nodes)
 
     def get_num_attention_heads(self,
                                 parallel_config: "ParallelConfig") -> int:
+        n_nodes = parallel_config.tensor_parallel_size
+        if parallel_config.hybrid:
+            n_nodes += parallel_config.num_cpu_workers
         return self.hf_text_config.num_attention_heads // \
-                    parallel_config.tensor_parallel_size
+                    n_nodes
 
     def get_num_layers(self, parallel_config: "ParallelConfig") -> int:
         total_num_hidden_layers = self.hf_text_config.num_hidden_layers
@@ -541,6 +547,7 @@ class ParallelConfig:
         self.tokenizer_pool_config = tokenizer_pool_config
         self.ray_workers_use_nsight = ray_workers_use_nsight
         self.placement_group = placement_group
+        self.hybrid = hybird_cpu_gpu
 
         self.world_size = pipeline_parallel_size * self.tensor_parallel_size
         if worker_use_ray:

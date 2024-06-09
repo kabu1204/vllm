@@ -80,6 +80,8 @@ class HybridModelRunner:
         lora_config: Optional[LoRAConfig],
         kv_cache_dtype: Optional[str] = "auto",
         is_driver_worker: bool = False,
+        is_cpu_worker: bool = False,
+        rank: int = -1,
         vision_language_config: Optional[VisionLanguageConfig] = None,
     ):
         self.model_config = model_config
@@ -90,10 +92,12 @@ class HybridModelRunner:
         self.lora_config = lora_config
         self.load_config = load_config
         self.is_driver_worker = is_driver_worker
+        self.is_cpu_worker = is_cpu_worker
+        self.rank = rank
         self.vision_language_config = vision_language_config
 
         self.device = self.device_config.device
-        self.pin_memory = is_pin_memory_available()
+        self.pin_memory = is_pin_memory_available() # TODO(ycy): always true on CPU worker
 
         self.kv_cache_dtype = kv_cache_dtype
         self.sliding_window = model_config.get_sliding_window()
@@ -460,6 +464,7 @@ class HybridModelRunner:
             batch_size = graph_batch_size
             num_decode_tokens = batch_size
 
+        # TODO(ycy): consider disable this for experiment
         if use_captured_graph:
             # The shape of graph_block_tables is
             # [max batch size, max context len // block size].
@@ -585,7 +590,7 @@ class HybridModelRunner:
                 # seq_start_loc=seq_start_loc,
                 # context_lens_tensor=context_lens_tensor,
                 block_tables=block_tables,
-                # use_cuda_graph=use_captured_graph,
+                use_cuda_graph=use_captured_graph,
             )
 
         if self.lora_config:
@@ -654,6 +659,7 @@ class HybridModelRunner:
             # print(metadata_dict)
             broadcast_tensor_dict(metadata_dict, src=0, device=torch.device(self.device))
         else:
+            # TODO(ycy): implement this
             metadata_dict = broadcast_tensor_dict(src=0, device=torch.device(self.device))
             input_tokens = metadata_dict.pop("input_tokens")
             input_positions = metadata_dict.pop("input_positions")
@@ -859,6 +865,8 @@ class HybridModelRunner:
         Since it is used for decoding-only, it assumes there's only 1 token
         per sequence in the batch.
         """
+        raise NotImplementedError("HybridModelRunner doesn't support CUDA graph capture.") 
+
         assert not self.model_config.enforce_eager
         logger.info("Capturing the model for CUDA graphs. This may lead to "
                     "unexpected consequences if the model is not static. To "
@@ -892,7 +900,7 @@ class HybridModelRunner:
             for batch_size in reversed(batch_size_capture_list):
                 # Create dummy attn_metadata.
                 attn_metadata = self.attn_backend.make_metadata(
-                    is_prompt=True,
+                    is_prompt=False,
                     num_prefills=0,
                     num_prefill_tokens=0,
                     num_decode_tokens=batch_size,
@@ -906,7 +914,7 @@ class HybridModelRunner:
                     # seq_start_loc=None,
                     # context_lens_tensor=None,
                     block_tables=block_tables[:batch_size],
-                    # use_cuda_graph=True,
+                    use_cuda_graph=True,
                 )
 
                 if self.lora_config:
@@ -932,6 +940,7 @@ class HybridModelRunner:
         elapsed_time = end_time - start_time
         # This usually takes < 10 seconds.
         logger.info("Graph capturing finished in %.0f secs.", elapsed_time)
+        logger.info(f"[rank{self.rank}]GraphRunner: {self.graph_runners}")
 
     @property
     def vocab_size(self) -> int:

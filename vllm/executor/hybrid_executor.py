@@ -39,6 +39,8 @@ class HybridExecutor(DistributedGPUExecutor):
         self.cache_config: CacheConfig
         self.scheduler_config: SchedulerConfig
         self.device_config: DeviceConfig
+
+        self.model_config = _verify_and_get_hybrid_model_config(self.model_config)
         
         # Disable Ray usage stats collection.
         ray_usage = os.environ.get("RAY_USAGE_STATS_ENABLED", "0")
@@ -308,6 +310,12 @@ class HybridExecutor(DistributedGPUExecutor):
 
         return [driver_worker_output] + ray_worker_outputs
 
+def _verify_and_get_hybrid_model_config(config: ModelConfig) -> ModelConfig:
+    if not config.enforce_eager:
+        logger.warning(
+            "HybridExexcutor doesn't support CUDA graph, fallback to the eager mode.")
+        config.enforce_eager = True
+    return config
 
 def _verify_and_get_cpu_model_config(config: ModelConfig) -> ModelConfig:
     import copy

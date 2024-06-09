@@ -36,6 +36,7 @@ class Attention(nn.Module):
             kv_cache_dtype = cache_config.cache_dtype
             block_size = cache_config.block_size
         else:
+            raise ValueError("cache_config is required.")
             kv_cache_dtype = "auto"
             block_size = 16
         if num_kv_heads is None:

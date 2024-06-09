@@ -380,4 +380,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createNcclCPUBackend", &NcclCPUBackend::createNcclCPUBackend);
 }
 
+const std::string NcclCPUBackend::getBackendName() const {
+  return "Nccl-CPU";
+}
+
 }  // namespace c10d

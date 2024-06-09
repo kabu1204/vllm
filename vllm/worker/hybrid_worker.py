@@ -21,6 +21,9 @@ from vllm.worker.embedding_model_runner import EmbeddingModelRunner
 from vllm.worker.hybrid_model_runner import HybridModelRunner
 from vllm.worker.worker_base import WorkerBase
 
+from vllm.logger import init_logger
+logger = init_logger(__name__)
+
 class HybridWorker(WorkerBase):
     """A worker class that executes (a partition of) the model on a GPU or a group of CPU cores.
 
@@ -88,6 +91,8 @@ class HybridWorker(WorkerBase):
             lora_config=self.lora_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
+            is_cpu_worker=is_cpu_worker,
+            rank=rank,
             vision_language_config=vision_language_config,
         )
         # Uninitialized cache engine. Will be initialized by

@@ -97,8 +97,8 @@ class UnquantizedLinearMethod(LinearMethodBase):
             if bias is not None:
                 return F.linear(x, weight) + bias
             return F.linear(x, weight)
-        if not is_hybrid_cpu_worker():
-            print(x.device, weight.device)
+        # if not is_hybrid_cpu_worker():
+            # print(x.device, weight.device)
         return F.linear(x, weight, bias)
 
 

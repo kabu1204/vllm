@@ -3,7 +3,8 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from vllm import _custom_ops as ops
+# from vllm import _custom_ops as ops
+from vllm import _hybrid_ops as ops
 from vllm.attention.ops.prefix_prefill import context_attention_fwd
 
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
@@ -40,6 +41,7 @@ class PagedAttention:
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[int, ...]:
+        print(f"[*] num_blocks: {num_blocks}, num_kv_heads: {num_kv_heads}, head_size: {head_size}")
         return (2, num_blocks, block_size * num_kv_heads * head_size)
 
     @staticmethod
@@ -56,6 +58,7 @@ class PagedAttention:
                                    -1, x)
         value_cache = kv_cache[1]
         value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        print(f"num_blocks: {num_blocks}, num_kv_heads: {num_kv_heads}, head_size: {head_size}, x: {x}")
         return key_cache, value_cache
 
     @staticmethod

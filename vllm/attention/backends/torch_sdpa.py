@@ -11,7 +11,6 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
 from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
 
-
 class TorchSDPABackend(AttentionBackend):
 
     @staticmethod
@@ -61,6 +60,7 @@ class TorchSDPAMetadata(AttentionMetadata, PagedAttentionMetadata):
     is_prompt: bool
     slot_mapping: torch.Tensor
     seq_lens: Optional[List[int]]
+    use_cuda_graph: bool
 
     def __post_init__(self):
         # Set during the execution of the first attention op.
@@ -206,6 +206,7 @@ class TorchSDPABackendImpl(AttentionImpl[TorchSDPAMetadata]):
             else:
                 # prefix-enabled attention
                 print(kv_cache.size())
+                print(attn_metadata.block_tables)
                 # TODO(ycy): implement prefix-enabled prefill attention
                 raise RuntimeError(
                     "Torch SDPA backend doesn't support prefix decoding.")

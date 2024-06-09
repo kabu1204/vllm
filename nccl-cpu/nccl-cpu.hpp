@@ -106,6 +106,8 @@ class NcclCPUBackend : public Backend {
       std::vector<at::Tensor>& tensors,
       int tag) override;
 
+  const std::string getBackendName() const override;
+
   // void setInternalNcclBackend();
 
   static c10::intrusive_ptr<Backend> createNcclCPUBackend(

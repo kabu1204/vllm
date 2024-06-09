@@ -299,6 +299,7 @@ class BlockSpaceManagerV1(BlockSpaceManager):
                 block = self.gpu_allocator.allocate()
                 # Set the reference counts of the token blocks.
                 block.ref_count = seq_group.num_seqs()
+                logger.warn(f"block_number: {block.block_number}")
             block_table.append(block)
 
         # Assign the block table for each sequence.
