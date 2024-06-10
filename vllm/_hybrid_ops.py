@@ -377,7 +377,7 @@ def reshape_and_cache(
 ) -> None:
     if key.is_cpu:
         # TODO(ycy): work with cache engine
-        cpu_cache_ops.reshape_and_cache(key, value, key_cache.cpu(), value_cache.cpu(),
+        cpu_cache_ops.reshape_and_cache(key, value, key_cache, value_cache,
                                      slot_mapping, kv_cache_dtype, kv_scale)
     else:
         vllm_cache_ops.reshape_and_cache(key, value, key_cache, value_cache,

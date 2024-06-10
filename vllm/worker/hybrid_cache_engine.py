@@ -24,10 +24,12 @@ class HybridCacheEngine:
         cache_config: CacheConfig,
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
+        is_cpu_worker: bool,
     ) -> None:
         self.cache_config = cache_config
         self.model_config = model_config
         self.parallel_config = parallel_config
+        self.is_cpu_worker = is_cpu_worker
 
         self.head_size = model_config.get_head_size()
         self.num_layers = model_config.get_num_layers(parallel_config)
@@ -36,6 +38,8 @@ class HybridCacheEngine:
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         self.num_cpu_blocks = cache_config.num_cpu_blocks
+        self.num_workset_blocks = self.num_gpu_blocks
+        self.num_swap_blocks = self.num_cpu_blocks
 
         if cache_config.cache_dtype == "auto":
             self.dtype = model_config.dtype
@@ -53,9 +57,17 @@ class HybridCacheEngine:
             self.block_size,
         )
 
-        # Initialize the cache.
-        self.gpu_cache = self._allocate_kv_cache(self.num_gpu_blocks, "cuda")
-        self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
+        # Initialize the cache.        
+        working_set_device = "cpu" if is_cpu_worker else "cuda"
+        swap_device = "cpu"
+        self.zero_copy = False
+        if working_set_device == swap_device:
+            self.zero_copy = True
+        self.gpu_cache = self._allocate_kv_cache(self.num_workset_blocks, working_set_device)
+        if self.zero_copy:
+            self.cpu_cache = self.gpu_cache
+        else:
+            self.cpu_cache = self._allocate_kv_cache(self.num_swap_blocks, swap_device)
 
     def _allocate_kv_cache(
         self,
@@ -76,11 +88,15 @@ class HybridCacheEngine:
         return kv_cache
 
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
+        if self.zero_copy:
+            return
         for i in range(self.num_layers):
             self.attn_backend.swap_blocks(self.cpu_cache[i], self.gpu_cache[i],
                                           src_to_dst)
 
     def swap_out(self, src_to_dst: torch.Tensor) -> None:
+        if self.zero_copy:
+            return
         for i in range(self.num_layers):
             self.attn_backend.swap_blocks(self.gpu_cache[i], self.cpu_cache[i],
                                           src_to_dst)

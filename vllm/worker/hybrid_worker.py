@@ -16,8 +16,7 @@ from vllm.distributed import (broadcast_tensor_dict,
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
 from vllm.sequence import ExecuteModelRequest, PoolerOutput, SamplerOutput
-from vllm.worker.cache_engine import CacheEngine
-from vllm.worker.embedding_model_runner import EmbeddingModelRunner
+from vllm.worker.hybrid_cache_engine import HybridCacheEngine
 from vllm.worker.hybrid_model_runner import HybridModelRunner
 from vllm.worker.worker_base import WorkerBase
 
@@ -97,7 +96,7 @@ class HybridWorker(WorkerBase):
         )
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
-        self.cache_engine: CacheEngine
+        self.cache_engine: HybridCacheEngine
         # Initialize gpu_cache as embedding models don't initialize kv_caches
         self.gpu_cache: Optional[List[torch.tensor]] = None
 
@@ -218,7 +217,6 @@ class HybridWorker(WorkerBase):
         # Note: To reuse the cache management procedure,
         # use cpu cache as 'gpu cache'.
         num_gpu_blocks = num_cpu_blocks
-        num_cpu_blocks = 0
         gc.collect()
         return num_gpu_blocks, num_cpu_blocks
 
@@ -240,8 +238,8 @@ class HybridWorker(WorkerBase):
 
     def _init_cache_engine(self):
         assert self.cache_config.num_gpu_blocks is not None
-        self.cache_engine = CacheEngine(self.cache_config, self.model_config,
-                                        self.parallel_config)
+        self.cache_engine = HybridCacheEngine(self.cache_config, self.model_config,
+                                        self.parallel_config, is_cpu_worker=self.is_cpu_worker)
         self.gpu_cache = self.cache_engine.gpu_cache
 
     def _warm_up_model(self) -> None:
@@ -346,7 +344,7 @@ class HybridWorker(WorkerBase):
     def get_cache_block_size_bytes(self) -> int:
         """Get the size of the KV cache block size in bytes.
         """
-        return CacheEngine.get_cache_block_size(self.cache_config,
+        return HybridCacheEngine.get_cache_block_size(self.cache_config,
                                                 self.model_config,
                                                 self.parallel_config)
 
