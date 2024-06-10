@@ -21,10 +21,12 @@ def allgather(rank, size):
     """ Simple allgather communication. """
     # group = dist.new_group([0, 1])
     device = "cuda:0" if rank == 0 else "cpu"
+    dtype = torch.float16 if rank == 0 else torch.bfloat16
     pin_memory = True if device == "cpu" else False
-    tensor_list = [rank*torch.zeros(2, dtype=torch.float32, device=device, pin_memory=pin_memory) for _ in range(2)]
-    tensor = torch.arange(2, dtype=torch.float32, device=device, pin_memory=pin_memory) + 1 + (2 * rank)
+    tensor_list = [rank*torch.zeros(2, dtype=dtype, device=device, pin_memory=pin_memory) for _ in range(2)]
+    tensor = torch.rand((1,2), dtype=dtype, device=device, pin_memory=pin_memory)
 
+    print(f"[rank{rank}] {tensor}")
     dist.all_gather(tensor_list, tensor)
     print('Rank ', rank, ' has data ', tensor_list)
 
@@ -55,6 +57,7 @@ if __name__ == "__main__":
     size = 2
     processes = []
     mp.set_start_method("spawn")
+    os.environ["VLLM_CPU_WORKER_NUM"] = "1"
     for rank in range(size):
         p = mp.Process(target=init_process, args=(rank, size, run))
         p.start()

@@ -1,9 +1,11 @@
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include "c10/core/ScalarType.h"
 #include "c10/util/intrusive_ptr.h"
 #include "cuda_runtime.h"
 #include "cuda_runtime_api.h"
@@ -38,6 +40,30 @@ static inline bool check_device(c10::Device dev1, c10::Device dev2) {
   return dev1.index() == dev2.index() && dev1.type() == dev2.type();
 }
 
+static inline bool check_dtype(c10::ScalarType dtype, bool is_cuda) {
+  if (is_cuda) {
+    return dtype == c10::ScalarType::Half;
+  } else {
+    return dtype == c10::ScalarType::BFloat16;
+  }
+}
+
+#define ASSERT_MSG(cond, msg) \
+  do {                        \
+    if (!(cond)) {             \
+        throw std::runtime_error(msg); \
+    }                           \
+  } while(0)
+
+#define ASSERT_DEVICE(t1, t2) \
+  ASSERT_MSG(check_device(t1.device(), t2.device()), "device mismatch")
+
+#define ASSERT_DTYPE(tensor) \
+  ASSERT_MSG(check_dtype(tensor.scalar_type(), tensor.device().is_cuda()), "dtype mismatch")
+
+#define ASSERT_SIZE_LIMIT(size, limit) \
+  ASSERT_MSG(tensor.is_contiguous(), "tensor is not contiguous")
+
 static inline int get_cpu_worker_num() {
   static int cpu_worker_num = -1;
   if (cpu_worker_num == -1) {
@@ -56,6 +82,16 @@ static inline bool is_cpu_process(int rank, int size) {
     cpu_worker_num = get_cpu_worker_num();
   }
   return rank >= size - cpu_worker_num;
+}
+
+static inline size_t align4KB(size_t size) {
+    return (size + 4095) & ~4095;
+}
+
+static inline int getPointerType(void* ptr) {
+  struct cudaPointerAttributes attr;
+  CUDA_CHECK(cudaPointerGetAttributes(&attr, ptr));
+  return attr.type;
 }
 
 bool NcclCPUWork::isCompleted() {
@@ -115,9 +151,10 @@ NcclCPUBackend::NcclCPUBackend(const c10::intrusive_ptr<::c10d::Store>& store,
     buffers[i] = shm->data + i * sharedMemorySize / size;
     if (i == rank) {
       localBuffer = buffers[i];
+      tensorStore = &shm->tensorStorage[i];
     }
   }
-
+  
   // 1.2 Initialize pthread barrier
   if (rank == 0) {
     pthread_barrierattr_t barrier_attr;
@@ -133,7 +170,6 @@ NcclCPUBackend::NcclCPUBackend(const c10::intrusive_ptr<::c10d::Store>& store,
     cudaIpcInitPool(rank, NCCL_CPU_CUDA_ZERO_COPY_BUFFER_SIZE,
                   &localPool, &shm->ghandle[rank]);
     cudaLocalBuffer = localPool.base;
-    printf("Init pool: %p\n", localPool.base);
   }
 
   pthread_barrier_wait(&shm->barrier);
@@ -163,90 +199,64 @@ c10::intrusive_ptr<Work> NcclCPUBackend::allgather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors, const AllgatherOptions& options) {
   return allgatherZeroCopy(outputTensors, inputTensors, options);
-  auto& tensor = inputTensors[0];
-  int rank = getRank();
-  bool is_cuda = tensor.device().is_cuda();
-  auto& localTensor = outputTensors[0][rank];
-  check_device(tensor.device(), localTensor.device());
-    // auto opt = torch::TensorOptions()
-  //                .dtype(torch::kFloat32)
-  //                .layout(torch::kStrided)
-  //                .device(torch::kCPU)
-  //                .requires_grad(false);
-  // torch::from_blob(buffers[i], inputTensors[0].sizes(), opt);
-  if (is_cuda) {
-    cudaMemcpy(localTensor.data_ptr(), tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(localBuffer, tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToHost);
-  } else {
-    std::memcpy(localTensor.data_ptr(), tensor.data_ptr(), tensor.nbytes());
-    std::memcpy(localBuffer, tensor.data_ptr(), tensor.nbytes());
-  }
-  pthread_barrier_wait(&shm->barrier);
-
-  for (int i = 0; i < getSize(); i++) {
-    auto& outputTensor = outputTensors[0][i];
-    if (i == rank) continue;
-    cudaMemcpy(outputTensor.data_ptr(), buffers[i], tensor.nbytes(), cudaMemcpyDefault);
-    cudaMemcpy(outputTensor.data_ptr(), buffers[i], tensor.nbytes(), cudaMemcpyDefault);
-  }
-
-  printf("allgather: %zu %zu %zu\n", inputTensors.size(), outputTensors.size(),
-         outputTensors[0].size());
-  return c10::make_intrusive<NcclCPUWork>(OpType::ALLGATHER, nullptr);
-  // return ncclPG.allgather(outputTensors, inputTensors, options);
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::allgatherZeroCopy(
       std::vector<std::vector<at::Tensor>>& outputTensors,
       std::vector<at::Tensor>& inputTensors,
       const AllgatherOptions& opts) {
-  auto& tensor = inputTensors[0];
   int rank = getRank();
-  bool is_cuda = tensor.device().is_cuda();
+  auto& tensor = inputTensors[0];
   auto& localTensor = outputTensors[0][rank];
-  check_device(tensor.device(), localTensor.device());
+  bool is_cuda = tensor.device().is_cuda();
+  ASSERT_DEVICE(tensor, localTensor);
+  ASSERT_DTYPE(tensor);
   if (is_cuda) {
-    cudaMemcpy(localTensor.data_ptr(), tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToDevice);
-    struct cudaPointerAttributes attr;
-    CUDA_CHECK(cudaPointerGetAttributes(&attr, cudaLocalBuffer));
-    printf("addr: %p, type %d\n", cudaLocalBuffer, attr.type);
+    CUDA_CHECK(cudaMemcpy(localTensor.data_ptr(), tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToDevice));
+    uint64_t fp16_offset = 0;
+    uint64_t bf16_offset = align4KB(tensor.nbytes());
+    void* bf16_ptr = (char*)cudaLocalBuffer + bf16_offset;
     CUDA_CHECK(cudaMemcpy(cudaLocalBuffer, tensor.data_ptr(), tensor.nbytes(), cudaMemcpyDeviceToDevice));
-    *(uint64_t*)(localBuffer) = 0;  // offset
-    // struct cudaPointerAttributes attr;
-    // CUDA_CHECK(cudaPointerGetAttributes(&attr, tensor.data_ptr()));
-    // printf("addr: %p, type %d\n", tensor.data_ptr(), attr.type);
+    auto bf16Tensor = at::from_blob(bf16_ptr, tensor.sizes(), tensor.strides(), 
+                  tensor.options().dtype(c10::kBFloat16)).copy_(tensor);
+    tensorStore->fp16Offset = fp16_offset;
+    tensorStore->bf16Offset = bf16_offset;
+    ASSERT_MSG(bf16_offset + tensor.nbytes() < NCCL_CPU_CUDA_ZERO_COPY_BUFFER_SIZE, "tensor too large");
   } else {
     std::memcpy(localTensor.data_ptr(), tensor.data_ptr(), tensor.nbytes());
-    std::memcpy(localBuffer, tensor.data_ptr(), tensor.nbytes());
+    uint64_t fp16_offset = align4KB(tensor.nbytes());
+    void* fp16_ptr = (char*)localBuffer + fp16_offset;
+    std::memcpy(localBuffer, tensor.data_ptr(), tensor.nbytes());  // bf16
+    auto fp16Tensor = at::from_blob(fp16_ptr, tensor.sizes(), tensor.strides(), 
+        tensor.options().device(c10::kCPU).dtype(c10::kHalf)).copy_(tensor);    // fp16
+    tensorStore->fp16Offset = fp16_offset;
+    tensorStore->bf16Offset = 0;
   }
   pthread_barrier_wait(&shm->barrier);
 
   for (int i = 0; i < getSize(); i++) {
-    // auto& outputTensor = outputTensors[0][i];
+    if (i == rank) continue;
+
     if(!is_cuda) {
       CUDA_CHECK(cudaHostRegister(outputTensors[0][i].data_ptr(), tensor.nbytes(), cudaHostRegisterPortable));
     }
     auto outputTensor = at::from_blob(outputTensors[0][i].data_ptr(), tensor.sizes(), tensor.strides(), 
                   tensor.options().device(c10::kCUDA));
-    if (i == rank) continue;
+
+    
+    size_t offset = (is_cuda ? shm->tensorStorage[i].fp16Offset : shm->tensorStorage[i].bf16Offset);
     void* addr;
     if (!is_cpu_process(i, getSize())) {
-      addr = (char*)(cudaBuffers[i]) + (*(uint64_t*)(buffers[i])); 
+      addr = (char*)(cudaBuffers[i]) + offset; 
     } else {
-      addr = buffers[i];
+      addr = (char*)(buffers[i]) + offset; 
     }
 
-    struct cudaPointerAttributes attr;
-    CUDA_CHECK(cudaPointerGetAttributes(&attr, addr));
-    printf("buffers[%d]: %p vs %p, type: %d\n", i, buffers[i], addr, attr.type);
     outputTensor += at::from_blob(addr, tensor.sizes(), tensor.strides(), 
                   tensor.options().device(c10::kCUDA));
   }
 
-  printf("allgather: %d %d %d\n", inputTensors.size(), outputTensors.size(),
-         outputTensors[0].size());
   return c10::make_intrusive<NcclCPUWork>(OpType::ALLGATHER, nullptr);
-  // return ncclPG.allgather(outputTensors, inputTensors, options);
 }
 
 c10::intrusive_ptr<Work> NcclCPUBackend::_allgather_base(

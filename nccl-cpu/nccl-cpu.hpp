@@ -14,10 +14,17 @@
 
 #define NCCL_CPU_MAX_WORLD_SIZE 8
 
+struct SharedTensorStorage {
+    size_t fp16Offset;
+    size_t bf16Offset;
+};
+
+// Shared memory struct holds a shared memory region.
 struct SharedMemory {
   pthread_barrier_t barrier;
   volatile size_t size;
   cudaIpcMemHandle_t ghandle[NCCL_CPU_MAX_WORLD_SIZE];  // shared cuda IPC mem handle
+  SharedTensorStorage tensorStorage[NCCL_CPU_MAX_WORLD_SIZE];
   char data[];
 };
 
@@ -132,8 +139,10 @@ private:
   void* cudaBuffers[NCCL_CPU_MAX_WORLD_SIZE];   // device shared buffer addresses
   void* cudaLocalBuffer;
 
+  // used for communication
   void* buffers[NCCL_CPU_MAX_WORLD_SIZE];   // host shared buffer addresses
   void* localBuffer;
+  SharedTensorStorage* tensorStore;
   void* dptr;   // device pointer of shared host memory
 
   bool isCPU;
