@@ -45,6 +45,10 @@ class NcclCPUBackend : public Backend {
       std::vector<at::Tensor>& tensors,
       const AllreduceOptions& opts = AllreduceOptions()) override;
 
+    c10::intrusive_ptr<Work> allreduceZeroCopy(
+      std::vector<at::Tensor>& tensors,
+      const AllreduceOptions& opts = AllreduceOptions());
+
   c10::intrusive_ptr<Work> allreduce_coalesced(
       std::vector<at::Tensor>& tensors,
       const AllreduceCoalescedOptions& opts =

@@ -6,14 +6,39 @@ import nccl_cpu
 
 # server = dist.TCPStore("127.0.0.1", 1234, 2, True)
 
+def gather(rank, size):
+    """ Simple gather communication. """
+    device = "cuda:0" if rank == 0 else "cpu"
+    dtype = torch.float16 if rank == 0 else torch.bfloat16
+    pin_memory = True if device == "cpu" else False
+    tensor = torch.rand((1, 2), dtype=dtype, device=device, pin_memory=pin_memory)
+    print(f"[rank{rank}] {tensor}")
+    if rank == 1:
+        tensor_list = [torch.ones(1, 2, dtype=dtype, device=device, pin_memory=pin_memory) for _ in range(size)]
+    else:
+        tensor_list = []
+    dist.gather(tensor, tensor_list, dst=1)
+    if rank == 1:
+        print('Rank ', rank, ' has data ', tensor_list)
+
+def broadcast(rank, size):
+    """ Simple broadcast communication. """
+    device = "cuda:0" if rank == 0 else "cpu"
+    dtype = torch.float16 if rank == 0 else torch.bfloat16
+    pin_memory = True if device == "cpu" else False
+    tensor = torch.rand((1, 2), dtype=dtype, device=device, pin_memory=pin_memory)
+    print(f"[rank{rank}] {tensor}")
+    dist.broadcast(tensor, src=1)
+    print('Rank ', rank, ' has data ', tensor)
+
 def allreduce(rank, size):
     """ Simple allreduce communication. """
     # group = dist.new_group([0, 1])
     device = "cuda:0" if rank == 0 else "cpu"
-    if rank == 0:
-        tensor = 2*torch.ones(1, device=device)
-    else:
-        tensor = torch.ones(1, device=device)
+    dtype = torch.float16 if rank == 0 else torch.bfloat16
+    pin_memory = True if device == "cpu" else False
+    tensor = torch.rand((1, 2), dtype=dtype, device=device, pin_memory=pin_memory)
+    print(f"[rank{rank}] {tensor}")
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     print('Rank ', rank, ' has data ', tensor)
 
@@ -25,7 +50,6 @@ def allgather(rank, size):
     pin_memory = True if device == "cpu" else False
     tensor_list = [rank*torch.zeros(2, dtype=dtype, device=device, pin_memory=pin_memory) for _ in range(2)]
     tensor = torch.rand((1,2), dtype=dtype, device=device, pin_memory=pin_memory)
-
     print(f"[rank{rank}] {tensor}")
     dist.all_gather(tensor_list, tensor)
     print('Rank ', rank, ' has data ', tensor_list)
@@ -42,8 +66,10 @@ def prefixStore(rank, size):
         print(x)
 
 def run(rank, size):
+    gather(rank, size)
+    # broadcast(rank, size)
     # allreduce(rank, size)
-    allgather(rank, size)
+    # allgather(rank, size)
 
 def init_process(rank, size, fn, backend='nccl-cpu'):
     """ Initialize the distributed environment. """
